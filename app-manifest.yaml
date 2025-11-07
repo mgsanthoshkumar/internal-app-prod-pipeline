@@ -1,0 +1,35 @@
+# Deployment definition (The first document)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: internal-app-deployment-v2
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: internal-app-v2
+  template:
+    metadata:
+      labels:
+        app: internal-app-v2
+    spec:
+      containers:
+      - name: internal-app-container
+        image: internal-app:v2
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+---
+# Service definition (The second document)
+apiVersion: v1
+kind: Service
+metadata:
+  name: internal-app-service-v2
+spec:
+  selector:
+    app: internal-app-v2
+  type: NodePort
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
