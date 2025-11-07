@@ -21,10 +21,10 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} # Uses the token with Read/Write permission
+          password: ${{ secrets.GITHUB_TOKEN }} # Uses the token with Write permission
 
       - name: Build and Push Docker image (Inline Fix)
-        # Uses inline shell commands to build and push the image
+        # Uses shell commands to build and push, bypassing external actions
         run: |
           # 1. Define the unique image tag
           IMAGE_TAG_SHA="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
@@ -49,15 +49,22 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Kubeconfig for Staging
-        # Writes the portable Kubeconfig secret (with embedded certs) to a file
-        run: |
-          echo "${{ secrets.KUBE_CONFIG_STAGING }}" > $HOME/kubeconfig.yaml
-
-      - name: Deploy to Staging Cluster
-        # Uses a dedicated action to simplify the kubectl application
-        uses: alexellis/k8s-action@master
+      - name: Install kubectl
+        # Uses the official action to install the kubectl binary
+        uses: azure/setup-kubectl@v3
         with:
-          kubeconfig: $HOME/kubeconfig.yaml
-          yaml: app-manifest.yaml
-          namespace: staging # Deploys to the dedicated 'staging' namespace
+          version: 'v1.27.1' # A stable version
+          
+      - name: Setup Kubeconfig for Staging
+        # Writes the portable Kubeconfig secret to the standard Kubeconfig file location
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_STAGING }}" > $HOME/.kube/config
+          
+      - name: Deploy to Staging Cluster (Inline kubectl Fix)
+        # Runs kubectl directly, using the Kubeconfig file we just created
+        run: |
+          # Set KUBECONFIG environment variable for kubectl to use the file
+          export KUBECONFIG=$HOME/.kube/config
+          
+          # Run the deployment command
+          kubectl apply -f app-manifest.yaml --namespace staging
