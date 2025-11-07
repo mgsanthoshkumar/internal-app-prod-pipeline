@@ -3,11 +3,11 @@ name: CI/CD Pipeline - Build and Deploy
 on:
   push:
     branches:
-      - master # Triggers pipeline on push to the master branch
+      - master
 
 env:
-  REGISTRY: ghcr.io # GitHub Container Registry
-  IMAGE_NAME: ${{ github.repository }} # Resolves to your repo path
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build_and_push:
@@ -21,50 +21,62 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} # Uses the token with Write permission
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and Push Docker image (Inline Fix)
-        # Uses shell commands to build and push, bypassing external actions
+        id: docker_push
         run: |
           # 1. Define the unique image tag
           IMAGE_TAG_SHA="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           
-          # 2. Build the Docker image
+          # 2. Build and push unique tag
           docker build -t $IMAGE_TAG_SHA .
-          
-          # 3. Push the unique tag
-          echo "Pushing versioned image: $IMAGE_TAG_SHA"
           docker push $IMAGE_TAG_SHA
           
-          # 4. Tag and push 'latest'
-          IMAGE_TAG_LATEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-          docker tag $IMAGE_TAG_SHA $IMAGE_TAG_LATEST
-          echo "Pushing latest image: $IMAGE_TAG_LATEST"
-          docker push $IMAGE_TAG_LATEST
-
+          # 3. Tag and push 'latest'
+          docker tag $IMAGE_TAG_SHA ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          
+          # Output the full image name for the next job to use
+          echo "IMAGE_FULL_TAG=$IMAGE_TAG_SHA" >> $GITHUB_OUTPUT
+    
   deploy_staging:
-    needs: build_and_push # Only runs if the image build job succeeds
+    needs: build_and_push # Needs the built image tag
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Install kubectl
-        # Uses the official action to install the kubectl binary
         uses: azure/setup-kubectl@v3
         with:
-          version: 'v1.27.1' # A stable version
+          version: 'v1.27.1'
+
+      - name: Dynamic Image Tag Update (CRITICAL FIX)
+        # Replaces the local image tag in the K8s manifest with the public GHCR image tag
+        run: |
+          # Use the image tag generated and pushed by the previous job
+          IMAGE_FULL_TAG="${{ needs.build_and_push.outputs.IMAGE_FULL_TAG }}"
+          
+          # Use sed to replace the placeholder image tag with the real GHCR tag
+          # This ensures the K8s manifest points to the public image registry
+          sed -i "s|image: internal-app:v2|image: $IMAGE_FULL_TAG|g" app-manifest.yaml
+          
+          # Show the updated manifest for debugging
+          cat app-manifest.yaml
           
       - name: Setup Kubeconfig for Staging
-        # Writes the portable Kubeconfig secret to the standard Kubeconfig file location
+        # Writes the portable Kubeconfig secret
         run: |
+          # Create .kube directory if it doesn't exist
+          mkdir -p $HOME/.kube
           echo "${{ secrets.KUBE_CONFIG_STAGING }}" > $HOME/.kube/config
           
-      - name: Deploy to Staging Cluster (Inline kubectl Fix)
-        # Runs kubectl directly, using the Kubeconfig file we just created
+      - name: Deploy to Staging Cluster (Final Attempt)
+        # Use kubectl directly with the configured file
         run: |
-          # Set KUBECONFIG environment variable for kubectl to use the file
           export KUBECONFIG=$HOME/.kube/config
           
           # Run the deployment command
+          # Note: If this fails, it is 100% a network access issue to 192.168.49.2
           kubectl apply -f app-manifest.yaml --namespace staging
